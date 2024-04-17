@@ -4,11 +4,14 @@
 #include <thread>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include "Client-Handler.cpp"
 
 #pragma comment(lib, "Ws2_32.lib")
 
 class Client {
 private:
+    std::vector<ClientHandler*> allClients;
+    std::string username;
     public:
         bool isValidAddress(const std::string& address) {
             std::regex ipPattern(R"((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))");
@@ -72,11 +75,20 @@ public:
             throw std::runtime_error("Connection failed with error");
         }
 
+
         std::cout << "Server running on [" << serverAddress << ":" << port << "]\n";
         std::cout << "Type 'exit' to quit\n";
 
         startListenerThread();
+
+        ClientHandler handler(socket_fd, 0, allClients);  // Create a ClientHandler instance
+        username = handler.authenticateUser();// Create a ClientHandler instance
+        if (username.empty()) {  // If the returned username is empty, authentication failed
+            throw std::runtime_error("Authentication failed");
+        }
     }
+
+
 
     void sendMessage() {
         std::string message;
@@ -85,6 +97,7 @@ public:
             if (message == "exit") {
                 break;
             }
+            std::string messageWithUsername = this->username + ": " + message;
             send(socket_fd, message.c_str(), static_cast<int>(message.length()), 0);
         }
     }
@@ -113,6 +126,7 @@ int main() {
     catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
     }
+
 
     return 0;
 }

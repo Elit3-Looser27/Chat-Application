@@ -11,11 +11,12 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 
+
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "libcrypto.lib")
 #pragma comment(lib, "libssl.lib")
 
-std::mutex mtx;
+extern std::mutex mtx;
 
 class ClientHandler {
     SOCKET clientSocket;
@@ -29,7 +30,7 @@ class ClientHandler {
 public:
     ClientHandler(SOCKET socket, int number, std::vector<ClientHandler*>& clients)
         : clientSocket(socket), clientNumber(number), allClients(clients) {
-        std::cout << "New connection with client#" << clientNumber << " at socket " << socket << std::endl;
+        std::cout << "New connection with user " << username << " at socket " << socket << std::endl;
     }
 
     void run() {
@@ -44,61 +45,84 @@ public:
         // This will be executed whether an exception was thrown or not
         closeConnection();
     }
+    
+
 
     bool authenticateUser() {
         std::string option;
-        std::cout << "Type 'signup' to register or 'login' to access your account: ";
-        std::cin >> option;
         std::string username, password;
+        bool authenticated = false;
 
-        if (option == "signup") {
-            std::cout << "Choose a username: ";
-            std::cin >> username;
-            std::cout << "Choose a password: ";
-            std::cin >> password;
-            return registerUser(username, password);
+        while (!authenticated) {
+            std::cout << "Type 'signup' to register or 'login' to access your account: ";
+            std::cin >> option;
+
+            if (option == "signup") {
+                std::cout << "Choose a username: ";
+                std::cin >> username;
+                std::cout << "Choose a password: ";
+                std::cin >> password;
+                authenticated = registerUser(username, password);
+                if (!authenticated) {
+                    std::cout << "Registration failed. Please try again.\n";
+                }
+            }
+            else if (option == "login") {
+                std::cout << "Username: ";
+                std::cin >> username;
+                std::cout << "Password: ";
+                std::cin >> password;
+                authenticated = loginUser(username, password);
+                if (!authenticated) {
+                    std::cout << "Login failed. Please try again or sign up.\n";
+                }
+            }
         }
-        else if (option == "login") {
-            std::cout << "Username: ";
-            std::cin >> username;
-            std::cout << "Password: ";
-            std::cin >> password;
-            return loginUser(username, password);
-        }
-        return false;
+
+        return authenticated;
     }
 
+
+
     bool registerUser(const std::string& username, const std::string& password) {
-        std::string publicKey, privateKey;
-        if (!generateRSAKeys(publicKey, privateKey)) {
-            std::cerr << "Failed to generate RSA keys.\n";
-            return false;
+        // Check if a user with the same username already exists
+        std::ifstream in("credentials.txt");
+        std::string usr, pwd;
+        while (in >> usr >> pwd) {
+            if (usr == username) {
+                std::cout << "A user with the same username already exists.\n";
+                return false;
+            }
         }
-        this->publicKey = publicKey; // Store the public key as a member of ClientHandler
-        this->privateKey = privateKey; // Store the private key as well
+        in.close();
 
         std::ofstream out("credentials.txt", std::ios::app);
         if (out) {
-            out << username << " " << password << " " << publicKey << " " << privateKey << "\n";
+            out << username << " " << password << "\n";
             out.close();
+            this->username = username;
+            std::cout << "User " << this->username << " registered successfully." << std::endl << std::endl << "Please Type in your Display name " << std::endl;;
             return true;
         }
         return false;
     }
 
+
     bool loginUser(const std::string& username, const std::string& password) {
         std::ifstream in("credentials.txt");
-        std::string usr, pwd, pubKey, privKey;
-        while (in >> usr >> pwd >> pubKey >> privKey) {
+        std::string usr, pwd;
+        while (in >> usr >> pwd) {
             if (usr == username && pwd == password) {
                 this->username = username;
-                this->privateKey = privKey; // Load the private key for session use
-                this->publicKey = pubKey; // Load the public key for session use
+                std::cout << "User " << this->username << " logged in successfully." << std::endl << std::endl << "Please Type in your Display name " << std::endl;;
                 return true;
             }
         }
+        in.clear(); // Clear the end-of-file flag
+        in.seekg(0); // Move the read position to the beginning of the file
         return false;
     }
+
 
     bool generateRSAKeys(std::string& publicKey, std::string& privateKey) {
         EVP_PKEY* pkey = NULL;
@@ -183,6 +207,42 @@ public:
 
         return encryptedMessage;
     }
+    std::string decryptMessage(const std::string& encryptedMessage) {
+        // Load private key
+        BIO* bio = BIO_new_mem_buf((void*)privateKey.c_str(), -1);
+        EVP_PKEY* privKey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+        BIO_free(bio);
+
+        // Decrypt the message
+        EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(privKey, NULL);
+        EVP_PKEY_decrypt_init(ctx);
+        EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING);
+
+        size_t outlen;
+        EVP_PKEY_decrypt(ctx, NULL, &outlen, (unsigned char*)encryptedMessage.c_str(), encryptedMessage.length());  // Determine buffer size
+        unsigned char* outbuf = (unsigned char*)malloc(outlen);
+        if (!outbuf) {
+            EVP_PKEY_CTX_free(ctx);
+            EVP_PKEY_free(privKey);
+            return "";
+        }
+
+        if (EVP_PKEY_decrypt(ctx, outbuf, &outlen, (unsigned char*)encryptedMessage.c_str(), encryptedMessage.length()) <= 0) {
+            free(outbuf);
+            EVP_PKEY_CTX_free(ctx);
+            EVP_PKEY_free(privKey);
+            return "";
+        }
+
+        std::string decryptedMessage((char*)outbuf, outlen);
+        free(outbuf);
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(privKey);
+
+        return decryptedMessage;
+    }
+
+
 
     std::string getRecipientPublicKey(const std::string& recipientUsername) {
         for (auto* client : allClients) {
@@ -255,8 +315,10 @@ public:
         std::lock_guard<std::mutex> lock(mtx);
         for (auto* client : allClients) {
             if (client->isAuthenticated()) {
-                std::cout << "Broadcasting to client#" << client->clientNumber << std::endl;
+                std::string messageWithUsername = this->username + ": " + message;
+                std::cout << "Broadcasting to user " << client->username << std::endl;
                 // Simulate sending a message
+                send(client->clientSocket, messageWithUsername.c_str(), messageWithUsername.size(), 0);
             }
         }
     }
@@ -267,23 +329,23 @@ public:
 
     void closeConnection() {
         closesocket(clientSocket);
-        std::cout << "Connection with client#" << clientNumber << " closed" << std::endl;
+        std::cout << "Connection with user" << username << " closed" << std::endl;
     }
 };
 
-int main() {
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cerr << "WSAStartup failed." << std::endl;
-        return 1;
-    }
-
-    std::vector<ClientHandler*> allClients;
-    SOCKET socket = INVALID_SOCKET; // Placeholder for actual socket initialization
-    ClientHandler handler(socket, 1, allClients);
-    std::thread clientThread(&ClientHandler::run, &handler);
-    clientThread.join();
-
-    WSACleanup();
-    return 0;
-}
+//// Rename main to startClient
+//void startClient() {
+//    WSADATA wsaData;
+//    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+//        std::cerr << "WSAStartup failed." << std::endl;
+//        return;
+//    }
+//
+//    std::vector<ClientHandler*> allClients;
+//    SOCKET socket = INVALID_SOCKET; // Placeholder for actual socket initialization
+//    ClientHandler handler(socket, 1, allClients);
+//    std::thread clientThread(&ClientHandler::run, &handler);
+//    clientThread.join();
+//
+//    WSACleanup();
+//}

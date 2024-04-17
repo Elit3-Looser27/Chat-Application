@@ -5,32 +5,32 @@
 #include <vector>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include "Client-Handler.cpp"
 
 #pragma comment(lib, "Ws2_32.lib")
 
-class ClientHandler {
+std::mutex mtx;
+
+class Server;  // Forward declaration of Server
+
+class ServerHandler {
 public:
     SOCKET clientSocket;
     int clientNumber;
-    ClientHandler(SOCKET socket, int number) : clientSocket(socket), clientNumber(number) {}
+    std::string username;
+    Server* server;  // Add a pointer to the server
 
-    void handleClient() {
-        char buffer[1024] = { 0 };
-        while (true) {
-            int bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0);
-            if (bytesReceived == SOCKET_ERROR || bytesReceived == 0) {
-                std::cout << "Client #" << clientNumber << " disconnected.\n";
-                closesocket(clientSocket);
-                break;
-            }
-            std::cout << "Client #" << clientNumber << ": " << std::string(buffer, bytesReceived) << std::endl;
-        }
-    }
+    ServerHandler(SOCKET socket, int number, Server* server, const std::string& username)
+       : clientSocket(socket), clientNumber(number), server(server), username(username) {}
+
+
+    void handleClient();  // Declare the method here
 };
 
 class Server {
 private:
     SOCKET listenSocket;
+    std::vector<ServerHandler*> clientHandlers;
     std::vector<std::thread> clientThreads;
 
 public:
@@ -43,11 +43,31 @@ public:
 
     ~Server() {
         WSACleanup();
-        for (auto& th : clientThreads) {
-            if (th.joinable()) {
-                th.join();
-            }
+        for (auto* handler : clientHandlers) {
+            delete handler;  // Delete the handler
         }
+    }
+
+    void broadcastMessage(const std::string& message) {
+        for (auto* handler : clientHandlers) {
+            send(handler->clientSocket, message.c_str(), static_cast<int>(message.length()), 0);
+        }
+    }
+
+    void startClient() {
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+            std::cerr << "WSAStartup failed." << std::endl;
+            return;
+        }
+
+        std::vector<ClientHandler*> allClients;
+        SOCKET socket = INVALID_SOCKET; // Placeholder for actual socket initialization
+        ClientHandler handler(socket, 1, allClients);
+        std::thread clientThread(&ClientHandler::run, &handler);
+        clientThread.join();
+
+        WSACleanup();
     }
 
     void start(const std::string& address, int port) {
@@ -75,20 +95,48 @@ public:
 
         int clientNumber = 0;
         while (true) {
-            SOCKET clientSocket = accept(listenSocket, nullptr, nullptr);
-            if (clientSocket == INVALID_SOCKET) {
-                std::cerr << "Accept failed" << std::endl;
-                continue;
+            try {
+                SOCKET clientSocket = accept(listenSocket, nullptr, nullptr);
+                if (clientSocket == INVALID_SOCKET) {
+                    std::cerr << "Accept failed with error: " << WSAGetLastError() << std::endl;
+                    continue; // Attempt to accept a new connection
+                }
+
+                // Receive the username from the client
+                char usernameBuffer[1024] = { 0 };
+                int bytesReceived = recv(clientSocket, usernameBuffer, sizeof(usernameBuffer), 0);
+                if (bytesReceived == SOCKET_ERROR || bytesReceived == 0) {
+                    std::cerr << "Failed to receive username from client" << std::endl;
+                    continue;
+                }
+                std::string username(usernameBuffer, bytesReceived);
+
+                std::cout << "New client #" << clientNumber << " connected." << std::endl;
+                ServerHandler* handler = new ServerHandler(clientSocket, clientNumber, this, username);
+                clientHandlers.push_back(handler);  // Store the handler
+                std::thread(&ServerHandler::handleClient, handler).detach();  // Start the handler in a new thread
+                clientNumber++;
             }
-            std::cout << "New client #" << clientNumber << " connected." << std::endl;
-            clientThreads.emplace_back([clientSocket, clientNumber]() {
-                ClientHandler handler(clientSocket, clientNumber);
-                handler.handleClient();
-                });
-            clientNumber++;
+            catch (const std::exception& e) {
+                std::cerr << "Server error: " << e.what() << std::endl;
+            }
         }
     }
 };
+
+// Define the method after the Server class is fully defined
+void ServerHandler::handleClient() {
+    char buffer[1024] = { 0 };
+    while (true) {
+        int bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0);
+        if (bytesReceived == SOCKET_ERROR || bytesReceived == 0) {
+            std::cout << "Client " << username << " disconnected.\n";
+            break;
+        }
+        std::string message = username + ": " + std::string(buffer, bytesReceived);
+        server->broadcastMessage(message);  // Send the message to the server for broadcasting
+    }
+}
 
 int main() {
     try {
@@ -103,9 +151,13 @@ int main() {
         std::cin >> port;
 
         server.start(serverAddress, port);
+
+        // Start the client after the server has started
+        server.startClient();  // Call startClient() on the server instance
     }
     catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
     }
+
     return 0;
 }
