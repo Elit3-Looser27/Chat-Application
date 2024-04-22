@@ -5,7 +5,10 @@
 #include <vector>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include "Client-Handler.cpp"
+#include "Client-Handler.h"
+#include <mutex>
+#include <fstream>
+
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -20,11 +23,23 @@ public:
     std::string username;
     Server* server;  // Add a pointer to the server
 
+
+    void storeMessage(const std::string& message) {
+        std::ofstream out("stored_messages.txt", std::ios::app);
+        if (out) {
+            out << message << std::endl;  // Save the encrypted message to file
+            out.close();
+        }
+    }
+
+
     ServerHandler(SOCKET socket, int number, Server* server, const std::string& username)
        : clientSocket(socket), clientNumber(number), server(server), username(username) {}
 
 
     void handleClient();  // Declare the method here
+
+
 };
 
 class Server {
@@ -48,11 +63,14 @@ public:
         }
     }
 
-    void broadcastMessage(const std::string& message) {
+    void broadcastMessage(const std::string& message, SOCKET senderSocket) {
         for (auto* handler : clientHandlers) {
-            send(handler->clientSocket, message.c_str(), static_cast<int>(message.length()), 0);
+            if (handler->clientSocket != senderSocket) { // Avoid sending the message back to the sender
+                send(handler->clientSocket, message.c_str(), static_cast<int>(message.length()), 0);
+            }
         }
     }
+
 
     void startClient() {
         WSADATA wsaData;
@@ -127,16 +145,36 @@ public:
 // Define the method after the Server class is fully defined
 void ServerHandler::handleClient() {
     char buffer[1024] = { 0 };
+    int key = 3;  // The same key as used in encryption
     while (true) {
         int bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0);
         if (bytesReceived == SOCKET_ERROR || bytesReceived == 0) {
             std::cout << "Client " << username << " disconnected.\n";
             break;
         }
-        std::string message = username + ": " + std::string(buffer, bytesReceived);
-        server->broadcastMessage(message);  // Send the message to the server for broadcasting
+        std::string message(buffer, bytesReceived);
+        std::cout << "Received encrypted message: " << message << std::endl;
+        this->storeMessage(message);  // Save the encrypted message to a file
+        std::string decryptedMessage = decrypt(message, key);  // Decrypt the message
+        std::cout << "Decrypted message: " << decryptedMessage << std::endl;
+        server->broadcastMessage(username + ": " + decryptedMessage, clientSocket);  // Send the decrypted message
     }
 }
+
+// Utility function to perform the Caesar cipher decryption
+//std::string decrypt(const std::string& cipherText, int shift) {
+//    std::string result = "";
+//    for (char c : cipherText) {
+//        if (isalpha(c)) {
+//            char base = islower(c) ? 'a' : 'A';
+//            result += char((c - base - shift + 26) % 26 + base);
+//        }
+//        else {
+//            result += c; // Non-alphabetical characters are not decrypted
+//        }
+//    }
+//    return result;
+//}
 
 int main() {
     try {

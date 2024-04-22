@@ -8,6 +8,9 @@
 
 #pragma comment(lib, "Ws2_32.lib")
 
+
+std::mutex mtx;
+
 class Client {
 private:
     std::vector<ClientHandler*> allClients;
@@ -92,15 +95,38 @@ public:
 
     void sendMessage() {
         std::string message;
+        std::string displayName;
+        int key = 3;  // Define the key for the Caesar cipher
+        std::cout << "Enter your display name: ";
+        std::getline(std::cin, displayName);
         while (true) {
+            std::cout << "Enter your message: ";
             std::getline(std::cin, message);
             if (message == "exit") {
                 break;
             }
-            std::string messageWithUsername = this->username + ": " + message;
-            send(socket_fd, message.c_str(), static_cast<int>(message.length()), 0);
+            std::string encryptedMessage = encrypt(message, key); // Encrypt the message
+            std::string messageWithUsername = username + " (" + displayName + "): " + encryptedMessage;
+            /*std::cout << "Sending encrypted message: " << messageWithUsername << std::endl;*/
+            send(socket_fd, messageWithUsername.c_str(), static_cast<int>(messageWithUsername.length()), 0);
         }
     }
+
+    // Utility function to perform the Caesar cipher encryption
+    std::string encrypt(const std::string& text, int shift) {
+        std::string result = "";
+        for (char c : text) {
+            if (isalpha(c)) {
+                char base = islower(c) ? 'a' : 'A';
+                result += char((c - base + shift) % 26 + base);
+            }
+            else {
+                result += c; // Non-alphabetical characters are not encrypted
+            }
+        }
+        return result;
+    }
+
 };
 
 int main() {

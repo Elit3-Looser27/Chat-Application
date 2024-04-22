@@ -10,6 +10,7 @@
 #include <openssl/pem.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include "Client-Handler.h"
 
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -17,23 +18,34 @@
 #pragma comment(lib, "libssl.lib")
 
 extern std::mutex mtx;
+std::string decrypt(const std::string& cipherText, int shift) {
+    std::string result = "";
+    for (char c : cipherText) {
+        if (isalpha(c)) {
+            char base = islower(c) ? 'a' : 'A';
+            result += char((c - base - shift + 26) % 26 + base);
+        }
+        else {
+            result += c; // Non-alphabetical characters are not decrypted
+        }
+    }
+    return result;
+}
 
-class ClientHandler {
-    SOCKET clientSocket;
-    int clientNumber;
-    std::string username;
-    std::string privateKey;
-    std::string publicKey;
-    std::vector<ClientHandler*>& allClients;
-    static const int NUMBER_OF_MESSAGES_TO_SEND = 15;
-
-public:
-    ClientHandler(SOCKET socket, int number, std::vector<ClientHandler*>& clients)
+//class ClientHandler {
+//    SOCKET clientSocket;
+//    int clientNumber;
+//    std::string username;
+//    std::vector<ClientHandler*>& allClients;
+//    static const int NUMBER_OF_MESSAGES_TO_SEND = 15;
+//
+//public:
+ClientHandler::ClientHandler(SOCKET socket, int number, std::vector<ClientHandler*>& clients)
         : clientSocket(socket), clientNumber(number), allClients(clients) {
         std::cout << "New connection with user " << username << " at socket " << socket << std::endl;
     }
 
-    void run() {
+    void ClientHandler::run() {
         try {
             if (authenticateUser()) {
                 enterChatRoom();
@@ -48,7 +60,7 @@ public:
     
 
 
-    bool authenticateUser() {
+    bool ClientHandler::authenticateUser() {
         std::string option;
         std::string username, password;
         bool authenticated = false;
@@ -84,7 +96,7 @@ public:
 
 
 
-    bool registerUser(const std::string& username, const std::string& password) {
+    bool ClientHandler::registerUser(const std::string& username, const std::string& password) {
         // Check if a user with the same username already exists
         std::ifstream in("credentials.txt");
         std::string usr, pwd;
@@ -108,7 +120,7 @@ public:
     }
 
 
-    bool loginUser(const std::string& username, const std::string& password) {
+    bool ClientHandler::loginUser(const std::string& username, const std::string& password) {
         std::ifstream in("credentials.txt");
         std::string usr, pwd;
         while (in >> usr >> pwd) {
@@ -124,137 +136,37 @@ public:
     }
 
 
-    bool generateRSAKeys(std::string& publicKey, std::string& privateKey) {
-        EVP_PKEY* pkey = NULL;
-        EVP_PKEY_CTX* pkey_ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-        if (!pkey_ctx)
-            return false;
+    
+    // Add the encrypt and decrypt functions to the ClientHandler class
+    std::string ClientHandler::encrypt(std::string text, int key) {
+        std::string result = "";
 
-        if (EVP_PKEY_keygen_init(pkey_ctx) <= 0)
-            return false;
-
-        if (EVP_PKEY_CTX_set_rsa_keygen_bits(pkey_ctx, 2048) <= 0)
-            return false;
-
-        if (EVP_PKEY_keygen(pkey_ctx, &pkey) <= 0)
-            return false;
-
-        // To write the keys into strings we use BIOs
-        BIO* bioPublic = BIO_new(BIO_s_mem());
-        BIO* bioPrivate = BIO_new(BIO_s_mem());
-
-        if (!PEM_write_bio_PUBKEY(bioPublic, pkey) || !PEM_write_bio_PrivateKey(bioPrivate, pkey, NULL, NULL, 0, NULL, NULL)) {
-            EVP_PKEY_free(pkey);
-            BIO_free_all(bioPublic);
-            BIO_free_all(bioPrivate);
-            return false;
+        for (int i = 0; i < text.length(); i++) {
+            if (isupper(text[i]))
+                result += char(int(text[i] + key - 65) % 26 + 65);
+            else
+                result += char(int(text[i] + key - 97) % 26 + 97);
         }
 
-        // Extract the keys from the BIOs to the std::string
-        size_t pub_len = BIO_pending(bioPublic);
-        size_t pri_len = BIO_pending(bioPrivate);
-        char* pub_key = new char[pub_len + 1];
-        char* pri_key = new char[pri_len + 1];
-
-        BIO_read(bioPublic, pub_key, static_cast<int>(pub_len));
-        BIO_read(bioPrivate, pri_key, static_cast<int>(pri_len));
-        pub_key[pub_len] = '\0';
-        pri_key[pri_len] = '\0';
-
-        publicKey = std::string(pub_key);
-        privateKey = std::string(pri_key);
-
-        delete[] pub_key;
-        delete[] pri_key;
-
-        EVP_PKEY_free(pkey);
-        BIO_free_all(bioPublic);
-        BIO_free_all(bioPrivate);
-
-        return true;
-    }
-    std::string encryptMessage(const std::string& message, const std::string& publicKeyPEM) {
-        // Load public key
-        BIO* bio = BIO_new_mem_buf((void*)publicKeyPEM.c_str(), -1);
-        EVP_PKEY* pubKey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
-        BIO_free(bio);
-
-        // Encrypt the message
-        EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(pubKey, NULL);
-        EVP_PKEY_encrypt_init(ctx);
-        EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING);
-
-        size_t outlen;
-        EVP_PKEY_encrypt(ctx, NULL, &outlen, (unsigned char*)message.c_str(), message.length());  // Determine buffer size
-        unsigned char* outbuf = (unsigned char*)malloc(outlen);
-        if (!outbuf) {
-            EVP_PKEY_CTX_free(ctx);
-            EVP_PKEY_free(pubKey);
-            return "";
-        }
-
-        if (EVP_PKEY_encrypt(ctx, outbuf, &outlen, (unsigned char*)message.c_str(), message.length()) <= 0) {
-            free(outbuf);
-            EVP_PKEY_CTX_free(ctx);
-            EVP_PKEY_free(pubKey);
-            return "";
-        }
-
-        std::string encryptedMessage((char*)outbuf, outlen);
-        free(outbuf);
-        EVP_PKEY_CTX_free(ctx);
-        EVP_PKEY_free(pubKey);
-
-        return encryptedMessage;
-    }
-    std::string decryptMessage(const std::string& encryptedMessage) {
-        // Load private key
-        BIO* bio = BIO_new_mem_buf((void*)privateKey.c_str(), -1);
-        EVP_PKEY* privKey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
-        BIO_free(bio);
-
-        // Decrypt the message
-        EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(privKey, NULL);
-        EVP_PKEY_decrypt_init(ctx);
-        EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING);
-
-        size_t outlen;
-        EVP_PKEY_decrypt(ctx, NULL, &outlen, (unsigned char*)encryptedMessage.c_str(), encryptedMessage.length());  // Determine buffer size
-        unsigned char* outbuf = (unsigned char*)malloc(outlen);
-        if (!outbuf) {
-            EVP_PKEY_CTX_free(ctx);
-            EVP_PKEY_free(privKey);
-            return "";
-        }
-
-        if (EVP_PKEY_decrypt(ctx, outbuf, &outlen, (unsigned char*)encryptedMessage.c_str(), encryptedMessage.length()) <= 0) {
-            free(outbuf);
-            EVP_PKEY_CTX_free(ctx);
-            EVP_PKEY_free(privKey);
-            return "";
-        }
-
-        std::string decryptedMessage((char*)outbuf, outlen);
-        free(outbuf);
-        EVP_PKEY_CTX_free(ctx);
-        EVP_PKEY_free(privKey);
-
-        return decryptedMessage;
+        return result;
     }
 
+    /*std::string decrypt(std::string cipherText, int key) {
+        std::string result = "";
 
-
-    std::string getRecipientPublicKey(const std::string& recipientUsername) {
-        for (auto* client : allClients) {
-            if (client->username == recipientUsername) {
-                return client->publicKey;
-            }
+        for (int i = 0; i < cipherText.length(); i++) {
+            if (isupper(cipherText[i]))
+                result += char(int(cipherText[i] - key - 65 + 26) % 26 + 65);
+            else
+                result += char(int(cipherText[i] - key - 97 + 26) % 26 + 97);
         }
-        return ""; // Return an empty string if no public key found
-    }
 
-    void enterChatRoom() {
+        return result;
+    }*/
+
+    void ClientHandler::enterChatRoom() {
         std::string message, recipientUsername;
+        int key = 3;  // You can choose any key
         while (true) {
             std::cout << "Enter recipient's username: ";
             std::getline(std::cin, recipientUsername);
@@ -262,19 +174,15 @@ public:
             std::getline(std::cin, message);
             if (message == "exit") break;
 
-            std::string publicKey = getRecipientPublicKey(recipientUsername);
-            if (publicKey.empty()) {
-                std::cout << "Recipient not found or has no public key." << std::endl;
-                continue;
-            }
-
-            std::string encryptedMessage = encryptMessage(message, publicKey);
-            saveMessageToFile(encryptedMessage);  // Save the encrypted message
-            broadcastMessageToClients(encryptedMessage);
+            std::string encryptedMessage = encrypt(message, key);
+            /*std::cout << "Encrypted message: " << encryptedMessage << std::endl;*/
+            std::string messageWithUsername = this->username + ": " + encryptedMessage;
+            saveMessageToFile(messageWithUsername);  // Save the encrypted message
+            broadcastMessageToClients(messageWithUsername);
         }
     }
 
-    void saveMessageToFile(const std::string& message) {
+    void ClientHandler::saveMessageToFile(const std::string& message) {
         std::ofstream out("encrypted_messages.txt", std::ios::app);
         if (out) {
             out << message << std::endl;  // Save the encrypted message to file
@@ -282,36 +190,9 @@ public:
         }
     }
 
-    std::string signMessage(const std::string& message) {
-        EVP_PKEY* evp_privateKey = loadPrivateKey(this->privateKey);
-        EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
-        const EVP_MD* md = EVP_sha256();
+    
 
-        EVP_SignInit(mdctx, md);
-        EVP_SignUpdate(mdctx, message.c_str(), message.length());
-
-        unsigned char* sig = new unsigned char[EVP_PKEY_size(evp_privateKey)];
-        unsigned int siglen;
-
-        EVP_SignFinal(mdctx, sig, &siglen, evp_privateKey);
-
-        std::string signature(reinterpret_cast<char*>(sig), siglen);
-        delete[] sig;
-
-        EVP_MD_CTX_free(mdctx);
-        EVP_PKEY_free(evp_privateKey);
-
-        return signature;
-    }
-
-    EVP_PKEY* loadPrivateKey(const std::string& pemPrivateKey) {
-        BIO* bio = BIO_new_mem_buf((void*)pemPrivateKey.c_str(), -1);
-        EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
-        BIO_free(bio);
-        return pkey;
-    }
-
-    void broadcastMessageToClients(const std::string& message) {
+    void ClientHandler::broadcastMessageToClients(const std::string& message) {
         std::lock_guard<std::mutex> lock(mtx);
         for (auto* client : allClients) {
             if (client->isAuthenticated()) {
@@ -323,15 +204,15 @@ public:
         }
     }
 
-    bool isAuthenticated() const {
+    bool ClientHandler::isAuthenticated() const {
         return !username.empty();
     }
 
-    void closeConnection() {
+    void ClientHandler::closeConnection() {
         closesocket(clientSocket);
         std::cout << "Connection with user" << username << " closed" << std::endl;
     }
-};
+
 
 //// Rename main to startClient
 //void startClient() {
