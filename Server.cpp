@@ -1,6 +1,5 @@
 #include <iostream>
 #include <string>
-#include <regex>
 #include <thread>
 #include <vector>
 #include <winsock2.h>
@@ -34,7 +33,7 @@ public:
 
 
     ServerHandler(SOCKET socket, int number, Server* server, const std::string& username)
-       : clientSocket(socket), clientNumber(number), server(server), username(username) {}
+        : clientSocket(socket), clientNumber(number), server(server), username(username) {}
 
 
     void handleClient();  // Declare the method here
@@ -155,9 +154,19 @@ void ServerHandler::handleClient() {
         std::string message(buffer, bytesReceived);
         std::cout << "Received encrypted message: " << message << std::endl;
         this->storeMessage(message);  // Save the encrypted message to a file
-        std::string decryptedMessage = decrypt(message, key);  // Decrypt the message
+
+        // Separate the display name from the message
+        size_t pos = message.find("): ");
+        if (pos == std::string::npos) {
+            std::cerr << "Invalid message format" << std::endl;
+            continue;
+        }
+        std::string displayName = message.substr(0, pos);  // Extract the display name
+        std::string encryptedMessage = message.substr(pos + 3);  // Extract the encrypted message
+
+        std::string decryptedMessage = decrypt(encryptedMessage, key);  // Decrypt the message
         std::cout << "Decrypted message: " << decryptedMessage << std::endl;
-        server->broadcastMessage(username + ": " + decryptedMessage, clientSocket);  // Send the decrypted message
+        server->broadcastMessage(displayName + ": " + decryptedMessage, clientSocket);  // Send the decrypted message
     }
 }
 

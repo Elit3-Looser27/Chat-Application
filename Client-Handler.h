@@ -12,6 +12,7 @@ class ClientHandler {
     int clientNumber;
     std::string username;
     std::vector<ClientHandler*>& allClients;
+    std::string displayName;
     static const int NUMBER_OF_MESSAGES_TO_SEND = 15;
 
 public:
